@@ -1,4 +1,11 @@
-"""Loss functions: L1 + Perceptual (VGG) + Mask BCE."""
+"""
+RetouchLoss for ABPN (Lei et al., CVPR 2022).
+  MSE(R_0, target) + MSE(R_l, downsample(target))   lambda_mse=1.0
+  Perceptual/LPIPS(R_0, target)                      lambda_perc=0.1
+  LSGAN adversarial                                  lambda_adv=0.1
+  Dice(M, mask_gt)  — diff-based pseudo-GT           lambda_dice=1.0
+  TV on blend maps                                   lambda_tv=0.1
+"""
 
 import torch
 import torch.nn as nn
@@ -6,94 +13,116 @@ import torch.nn.functional as F
 import torchvision.models as models
 
 
-class PerceptualLoss(nn.Module):
-    """VGG-16 perceptual loss at relu2_2 and relu3_3 (per paper)."""
+# ---------------------------------------------------------------------------
+# Perceptual (LPIPS-style VGG)
+# ---------------------------------------------------------------------------
 
+class _PerceptualLoss(nn.Module):
     def __init__(self):
         super().__init__()
-        vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1)
-        features = vgg.features
-
-        # relu2_2 = features[:9], relu3_3 = features[9:18]
-        self.slice1 = nn.Sequential(*list(features[:9]))
-        self.slice2 = nn.Sequential(*list(features[9:18]))
-
+        vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features
+        self.slice1 = nn.Sequential(*list(vgg[:9]))    # relu2_2
+        self.slice2 = nn.Sequential(*list(vgg[9:18]))  # relu3_3
         for p in self.parameters():
             p.requires_grad = False
-
-        # ImageNet normalization
         self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
-        self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+        self.register_buffer('std',  torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
-    def _normalize(self, x):
-        return (x - self.mean) / self.std
+    def forward(self, output, target):
+        out_n = (output - self.mean) / self.std
+        tgt_n = (target - self.mean) / self.std
+        f1_o = self.slice1(out_n);  f1_t = self.slice1(tgt_n)
+        f2_o = self.slice2(f1_o);   f2_t = self.slice2(f1_t)
+        return F.l1_loss(f1_o, f1_t) + F.l1_loss(f2_o, f2_t)
 
-    def forward(self, pred, target):
-        pred = self._normalize(pred)
-        target = self._normalize(target)
 
-        # relu2_2 features
-        pred_f1 = self.slice1(pred)
-        target_f1 = self.slice1(target)
-        loss1 = F.l1_loss(pred_f1, target_f1)
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-        # relu3_3 features
-        pred_f2 = self.slice2(pred_f1)
-        target_f2 = self.slice2(target_f1)
-        loss2 = F.l1_loss(pred_f2, target_f2)
+def _tv_loss(x):
+    return (torch.abs(x[:, :, 1:, :] - x[:, :, :-1, :]).mean()
+          + torch.abs(x[:, :, :, 1:] - x[:, :, :, :-1]).mean())
 
-        return loss1 + loss2
 
+def _dice_loss(pred, gt):
+    p = pred.flatten(1).float()
+    g = gt.flatten(1).float()
+    inter = (p * g).sum(1)
+    return (1.0 - (2.0 * inter + 1e-6) / (p.sum(1) + g.sum(1) + 1e-6)).mean()
+
+
+def _downsample2x(x):
+    h, w = x.shape[-2:]
+    return F.interpolate(x, size=(h // 2, w // 2), mode='bilinear', align_corners=False)
+
+
+# ---------------------------------------------------------------------------
+# Combined RetouchLoss
+# ---------------------------------------------------------------------------
 
 class RetouchLoss(nn.Module):
     """
-    Paper loss (Xu et al. ICCV 2025):
-        total = L1(output, target)
-              + lambda_mask       * BCE(Mpred, Mgt, label_smoothing=0.05)
-              + lambda_perceptual * VGG(output, target)  [relu2_2 + relu3_3]
+    Args (forward):
+      R_0:           [B,3,H,W]      full-res generator output
+      R_l:           [B,3,H/4,W/4] low-res LRL output
+      M:             [B,1,H/4,W/4] predicted mask
+      blends:        list of blend maps [B_l, B_1, B_0]
+      target:        [B,3,H,W]      ground-truth retouched
+      D_fake_logits: patch logits or None
+      mask_gt:       [B,1,H,W] or None — diff-based pseudo GT mask
     """
 
-    def __init__(self, lambda_mask=0.1, lambda_perceptual=0.01, lambda_residual=0.0):
+    def __init__(self, lambda_mse=1.0, lambda_perc=0.1, lambda_adv=0.1,
+                 lambda_dice=1.0, lambda_tv=0.1):
         super().__init__()
-        self.lambda_mask = lambda_mask
-        self.lambda_perceptual = lambda_perceptual
+        self.lambda_mse  = lambda_mse
+        self.lambda_perc = lambda_perc
+        self.lambda_adv  = lambda_adv
+        self.lambda_dice = lambda_dice
+        self.lambda_tv   = lambda_tv
 
-        self.l1 = nn.L1Loss()
-        self.bce = nn.BCELoss()
-        self.perceptual = PerceptualLoss()
+        self.perc_fn = _PerceptualLoss()
 
-    def forward(self, output, Mpred, target, Mgt, source=None):
-        """
-        Args:
-            output: [B, 3, H, W] model output
-            Mpred:  [B, 3, H/4, W/4] predicted mask (sigmoid output)
-            target: [B, 3, H, W] ground truth retouched
-            Mgt:    [B, 3, H, W] ground truth blemish mask
-            source: unused, kept for API compatibility
-        """
-        # L1 reconstruction loss
-        l_retouch = self.l1(output, target)
+    def forward(self, R_0, R_l, M, blends, target,
+                D_fake_logits=None, mask_gt=None):
 
-        # Mask loss with label smoothing 0.05 (per paper) and numerical clamp.
-        # Smoothing: scale soft targets to [0.025, 0.975] to avoid overconfidence.
-        Mgt_down = F.interpolate(Mgt, size=Mpred.shape[-2:],
-                                 mode='bilinear', align_corners=False)
-        with torch.autocast(device_type='cuda', enabled=False):
-            Mpred_safe = Mpred.float().clamp(1e-6, 1.0 - 1e-6)
-            Mgt_smooth = Mgt_down.float() * 0.95 + 0.025
-            l_mask = self.bce(Mpred_safe, Mgt_smooth)
+        # MSE at full res + low res
+        target_l = _downsample2x(_downsample2x(target))
+        mse_full = F.mse_loss(R_0, target)
+        mse_low  = F.mse_loss(R_l, target_l)
+        mse      = mse_full + mse_low
 
-        # Perceptual loss (relu2_2 + relu3_3)
-        l_perceptual = self.perceptual(output, target)
+        # Perceptual
+        perc = self.perc_fn(R_0.float(), target.float())
 
-        total = (l_retouch
-                 + self.lambda_mask * l_mask
-                 + self.lambda_perceptual * l_perceptual)
+        # Adversarial (LSGAN generator loss)
+        adv = torch.tensor(0.0, device=R_0.device)
+        if D_fake_logits is not None:
+            adv = 0.5 * ((D_fake_logits - 1.0) ** 2).mean()
 
-        return total, {
-            'l_retouch': l_retouch.item(),
-            'l_mask': l_mask.item(),
-            'l_perceptual': l_perceptual.item(),
-            'l_residual': 0.0,
+        # Dice on predicted mask
+        dice = torch.tensor(0.0, device=R_0.device)
+        if mask_gt is not None and self.lambda_dice > 0:
+            # Downsample GT mask to M's spatial size
+            mgt = F.interpolate(mask_gt, size=M.shape[-2:], mode='bilinear', align_corners=False)
+            dice = _dice_loss(M, mgt)
+
+        # TV on blend maps
+        tv = sum(_tv_loss(b) for b in blends) / len(blends)
+
+        total = (self.lambda_mse  * mse
+               + self.lambda_perc * perc
+               + self.lambda_adv  * adv
+               + self.lambda_dice * dice
+               + self.lambda_tv   * tv)
+
+        loss_dict = {
+            'mse':   mse.item(),
+            'perc':  perc.item(),
+            'adv':   adv.item(),
+            'dice':  dice.item(),
+            'tv':    tv.item(),
             'total': total.item(),
         }
+        return total, loss_dict

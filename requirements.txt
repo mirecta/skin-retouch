@@ -10,3 +10,6 @@ lpips>=0.1.4
 scikit-image>=0.21
 mediapipe>=0.10
 opencv-python>=4.8
+insightface>=0.7.3
+onnxruntime-gpu>=1.17.0
+facenet-pytorch>=2.5.3
