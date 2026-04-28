@@ -1,0 +1,47 @@
+# Data
+data:
+  original_dir: /root/retouch/dataset/images1024x1024
+  retouched_dir: /root/retouch/dataset/ffhqr
+  patch_size: 256
+  num_workers: 8
+  pin_memory: true
+
+# Progressive training: increase crop size at later epochs
+# Each entry: [start_epoch, patch_size, batch_size]
+progressive:
+  - [0,  256, 32]
+  - [30, 512, 8]
+
+# Model
+model:
+  levels: 2
+  channels: 64
+  fsr_blocks: 2
+  window_size: 8
+  patch_size: 8
+
+# Training
+train:
+  batch_size: 32
+  epochs: 100
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  warmup_epochs: 10
+
+# Loss weights (paper: L1 + lambda_mask*BCE + lambda_perceptual*VGG)
+loss:
+  lambda_mask: 0.1
+  lambda_perceptual: 0.01
+
+# Hardware
+hardware:
+  device: cuda
+  amp: true
+  compile: false
+
+# Logging
+log:
+  checkpoint_dir: ./checkpoints
+  log_dir: ./logs
+  save_every: 5
+  eval_every: 1

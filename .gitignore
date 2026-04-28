@@ -1,0 +1,30 @@
+# Checkpoints & weights
+checkpoints/
+checkpoints_v1/
+*.pth
+*.pt
+
+# TensorBoard logs
+logs/
+
+# Inference outputs
+output/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Dataset (lives outside this repo)
+dataset/
+ffhqr/
+images1024x1024/
+
+# Misc
+.DS_Store
+*.swp
+*.swo
