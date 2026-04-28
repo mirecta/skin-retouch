@@ -1,15 +1,16 @@
 """
 ABPN: Adaptive Blend Pyramid Network (Lei et al., CVPR 2022).
 
+nf=64  → paper-original size   (~6.6M params)
+nf=128 → 2× wider, higher quality (~25M params, recommended for non-realtime)
+
 Architecture:
-  LRL (Local Retouching Layer):
-    MutualEncoder → 6-block CBR feature pyramid on I_l (= I_0 / 4)
-    MPB (Mask Prediction Branch) → M at I_l scale
-    LRB (Local Retouching Branch) → R_l at I_l scale via 3 LAM decoder layers
-  BPL (Blend Pyramid Layer):
-    R-ABM: invert R_l → B_l
-    RefiningModule × 2: B_l → B_1 → B_0 using H_1, H_0 (Laplacian high-freq)
-    ABM: I_0, B_0 → R_0 (full-res output)
+  LRL:  MutualEncoder (6-block CBR on I_l=I_0/4)
+        MPB (mask prediction from f3)
+        LRB (3× LAM decoder → R_l)
+  BPL:  R-ABM (invert R_l → B_l)
+        RefiningModule × 2 (B_l → B_1 → B_0 via Laplacian high-freq)
+        ABM (I_0 + B_0 → R_0)
 """
 
 import torch
@@ -26,7 +27,7 @@ def _cbr(in_ch, out_ch, stride=1):
 
 
 class LAM(nn.Module):
-    """Local Attentive Module: out = tanh(W_f(cat(skip, up(feat), M))) * sigmoid(W_g(...))"""
+    """Local Attentive Module: out = tanh(W_f(cat(skip,up(feat),M))) * sigmoid(W_g(...))"""
 
     def __init__(self, skip_ch, feat_ch, out_ch):
         super().__init__()
@@ -36,13 +37,13 @@ class LAM(nn.Module):
 
     def forward(self, skip, feat, M):
         feat_up = F.interpolate(feat, size=skip.shape[-2:], mode='bilinear', align_corners=False)
-        M_up   = F.interpolate(M,    size=skip.shape[-2:], mode='bilinear', align_corners=False)
+        M_up    = F.interpolate(M,    size=skip.shape[-2:], mode='bilinear', align_corners=False)
         x = torch.cat([skip, feat_up, M_up], dim=1)
         return torch.tanh(self.conv_f(x)) * torch.sigmoid(self.conv_g(x))
 
 
 class RefiningModule(nn.Module):
-    """B_out = φ_2(h(φ_1(cat(up(B), H)))) + up(B)  — progressive blend refinement."""
+    """B_out = φ_2(h(φ_1(cat(up(B), H)))) + up(B)"""
 
     def __init__(self):
         super().__init__()
@@ -52,16 +53,11 @@ class RefiningModule(nn.Module):
 
     def forward(self, B, H):
         B_up = F.interpolate(B, size=H.shape[-2:], mode='bilinear', align_corners=False)
-        x = torch.cat([B_up, H], dim=1)
-        return self.phi2(self.act(self.phi1(x))) + B_up
+        return self.phi2(self.act(self.phi1(torch.cat([B_up, H], dim=1)))) + B_up
 
 
 class ABM(nn.Module):
-    """
-    Adaptive Blend Module: R = Σ_i (j_i·B + k_i) · g(I, i)
-    g(I,0)=1, g(I,1)=I, g(I,2)=I²
-    Init: j=[0,1,0], k=[0,0,0] → R = B·I (identity in log-space)
-    """
+    """R = Σ_i (j_i·B + k_i)·g(I,i); g=(1, I, I²); init j=[0,1,0], k=[0,0,0]"""
 
     def __init__(self):
         super().__init__()
@@ -69,33 +65,32 @@ class ABM(nn.Module):
         self.k = nn.Parameter(torch.tensor([0.0, 0.0, 0.0]))
 
     def _poly(self, I):
-        g0 = torch.ones_like(I)
-        g1 = I
-        g2 = I * I
-        sum_jg = self.j[0] * g0 + self.j[1] * g1 + self.j[2] * g2
-        sum_kg = self.k[0] * g0 + self.k[1] * g1 + self.k[2] * g2
-        return sum_jg, sum_kg
+        g0, g1, g2 = torch.ones_like(I), I, I * I
+        return (self.j[0]*g0 + self.j[1]*g1 + self.j[2]*g2,
+                self.k[0]*g0 + self.k[1]*g1 + self.k[2]*g2)
 
     def forward(self, I, B):
-        sum_jg, sum_kg = self._poly(I)
-        return sum_jg * B + sum_kg
+        jg, kg = self._poly(I)
+        return jg * B + kg
 
     def reverse(self, I, R):
-        sum_jg, sum_kg = self._poly(I)
-        return (R - sum_kg) / (sum_jg.abs() + 1e-6)
+        jg, kg = self._poly(I)
+        return (R - kg) / (jg.abs() + 1e-6)
 
 
 class MutualEncoder(nn.Module):
-    """6-block CBR encoder on I_l; returns (f1, f2, f3, f4, f5, f6)."""
+    """6-block CBR feature pyramid. nf=64 → [64,128,256,256,256,256] (paper-original)"""
 
-    def __init__(self):
+    def __init__(self, nf=64):
         super().__init__()
-        self.b1 = _cbr(3,   64,  stride=1)   # f1: same as I_l (H/4 of I_0)
-        self.b2 = _cbr(64,  128, stride=2)   # f2: H/8
-        self.b3 = _cbr(128, 256, stride=2)   # f3: H/16
-        self.b4 = _cbr(256, 256, stride=2)   # f4: H/32
-        self.b5 = _cbr(256, 256, stride=1)   # f5: H/32
-        self.b6 = _cbr(256, 256, stride=1)   # f6: H/32
+        c = [nf, nf*2, nf*4, nf*4, nf*4, nf*4]
+        self.b1 = _cbr(3,    c[0], stride=1)
+        self.b2 = _cbr(c[0], c[1], stride=2)
+        self.b3 = _cbr(c[1], c[2], stride=2)
+        self.b4 = _cbr(c[2], c[3], stride=2)
+        self.b5 = _cbr(c[3], c[4], stride=1)
+        self.b6 = _cbr(c[4], c[5], stride=1)
+        self.ch = c
 
     def forward(self, Il):
         f1 = self.b1(Il)
@@ -108,16 +103,16 @@ class MutualEncoder(nn.Module):
 
 
 class MPB(nn.Module):
-    """Mask Prediction Branch: f3 (H/16) → M at I_l scale (H/4) via 4 CBR + upsample."""
+    """Mask Prediction Branch: f3 → M at I_l scale."""
 
-    def __init__(self):
+    def __init__(self, in_ch):
         super().__init__()
         self.net = nn.Sequential(
-            _cbr(256, 256, stride=1),
-            _cbr(256, 128, stride=1),
-            _cbr(128, 64,  stride=1),
-            _cbr(64,  32,  stride=1),
-            nn.Conv2d(32, 1, 1),
+            _cbr(in_ch,      in_ch,      stride=1),
+            _cbr(in_ch,      in_ch // 2, stride=1),
+            _cbr(in_ch // 2, in_ch // 4, stride=1),
+            _cbr(in_ch // 4, in_ch // 8, stride=1),
+            nn.Conv2d(in_ch // 8, 1, 1),
         )
 
     def forward(self, f3):
@@ -127,14 +122,15 @@ class MPB(nn.Module):
 
 
 class LRB(nn.Module):
-    """Local Retouching Branch: 3 LAM decoder layers → R_l at I_l scale."""
+    """Local Retouching Branch: 3 LAM decoder → R_l."""
 
-    def __init__(self):
+    def __init__(self, nf=64):
         super().__init__()
-        self.lam3 = LAM(skip_ch=256, feat_ch=256, out_ch=256)  # (f3, f6) → d3 at H/16
-        self.lam2 = LAM(skip_ch=128, feat_ch=256, out_ch=128)  # (f2, d3) → d2 at H/8
-        self.lam1 = LAM(skip_ch=64,  feat_ch=128, out_ch=64)   # (f1, d2) → d1 at H/4
-        self.out_conv = nn.Conv2d(64, 3, 3, padding=1)
+        c1, c2, c4 = nf, nf*2, nf*4
+        self.lam3    = LAM(skip_ch=c4, feat_ch=c4, out_ch=c4)
+        self.lam2    = LAM(skip_ch=c2, feat_ch=c4, out_ch=c2)
+        self.lam1    = LAM(skip_ch=c1, feat_ch=c2, out_ch=c1)
+        self.out_conv = nn.Conv2d(c1, 3, 3, padding=1)
 
     def forward(self, f1, f2, f3, f6, M):
         d3 = self.lam3(f3, f6, M)
@@ -146,23 +142,17 @@ class LRB(nn.Module):
 class ABPN(nn.Module):
     """
     Adaptive Blend Pyramid Network.
-
-    forward(x) -> (R_0, R_l, M, blends)
-      x:       [B, 3, H, W] in [0, 1]
-      R_0:     [B, 3, H, W]     final full-res retouched output
-      R_l:     [B, 3, H/4, W/4] low-res retouched (MSE supervision)
-      M:       [B, 1, H/4, W/4] predicted skin/retouching mask
-      blends:  [B_l, B_1, B_0]  blend maps (TV regularisation)
+    forward(x) → (R_0, R_l, M, [B_l, B_1, B_0])
     """
 
-    def __init__(self):
+    def __init__(self, nf=64):
         super().__init__()
-        self.encoder  = MutualEncoder()
-        self.mpb      = MPB()
-        self.lrb      = LRB()
-        self.abm      = ABM()
-        self.refine1  = RefiningModule()   # B_l → B_1 via H_1
-        self.refine2  = RefiningModule()   # B_1 → B_0 via H_0
+        self.encoder = MutualEncoder(nf)
+        self.mpb     = MPB(in_ch=nf * 4)
+        self.lrb     = LRB(nf)
+        self.abm     = ABM()
+        self.refine1 = RefiningModule()
+        self.refine2 = RefiningModule()
 
     @staticmethod
     def _ds2(x):
@@ -196,4 +186,4 @@ class ABPN(nn.Module):
 
     @classmethod
     def from_config(cls, cfg):
-        return cls()
+        return cls(nf=cfg.get('nf', 64))

@@ -6,23 +6,22 @@ data:
   num_workers: 8
   pin_memory: true
 
-# Progressive training: increase crop size at later epochs
-# Each entry: [start_epoch, patch_size, batch_size]
+# Progressive training — [start_epoch, patch_size, batch_size]
 progressive:
-  - [0,  256, 16]
-  - [30, 512,  4]
+  - [0,   256, 16]
+  - [30,  512,  4]
+  - [150, 2048, 1]
 
-# Model (ABPN has fixed dimensions; nf/n_res are accepted but unused)
+# Model
 model:
-  nf: 64
-  n_res: 8
+  nf: 128
 
-# Training — matches ABPN paper (Lei et al., CVPR 2022)
+# Training — ABPN paper (Lei et al., CVPR 2022)
 train:
   epochs: 200
   lr_g: 0.0005
   lr_d: 0.0005
-  lr_step_epoch: 100      # reduce LR by 10x after this epoch
+  lr_step_epoch: 100
   betas: [0.9, 0.999]
   lambda_mse:  1.0
   lambda_perc: 0.1
