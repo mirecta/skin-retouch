@@ -1,0 +1,33 @@
+# Data — same as ABPN run, full 1024 resolution (StyleGAN2 fixed at 1024)
+data:
+  original_dir: /root/retouch/dataset/images1024x1024
+  retouched_dir: /root/retouch/dataset/ffhqr
+  num_workers: 4
+  # Subset for quick validation; set to null for full dataset
+  limit_train: 2000
+  limit_val: 200
+
+# Model
+model:
+  stylegan2_pkl: styleretoucher/weights/stylegan2-ffhq-1024x1024.pkl
+
+# Training
+train:
+  epochs: 50
+  batch_size: 2        # 1024×1024 is heavy — start small
+  lr: 0.0001           # lower than ABPN: SE+BAFS fine-tuning onto frozen prior
+  betas: [0.9, 0.999]
+  lambda_mse:      1.0
+  lambda_perc:     0.5
+  lambda_identity: 0.1
+
+# Hardware
+hardware:
+  device: cuda
+
+# Logging
+log:
+  checkpoint_dir: ./checkpoints_sr
+  log_dir: ./logs_sr
+  save_every: 2
+  eval_every: 1

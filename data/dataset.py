@@ -39,7 +39,7 @@ class FFHQRDataset(Dataset):
     """
 
     def __init__(self, original_dir, retouched_dir, split='train',
-                 patch_size=512, augment=None):
+                 patch_size=512, augment=None, limit=None):
         assert split in SPLITS, f"split must be one of {list(SPLITS.keys())}"
         self.original_dir = original_dir
         self.retouched_dir = retouched_dir
@@ -60,8 +60,11 @@ class FFHQRDataset(Dataset):
             if os.path.exists(orig_path) and os.path.exists(ret_path):
                 self.ids.append(i)
 
-        print(f"[FFHQRDataset] split={split}, found {len(self.ids)} pairs "
-              f"(range {start}-{end})")
+        if limit is not None:
+            self.ids = self.ids[:limit]
+
+        print(f"[FFHQRDataset] split={split}, using {len(self.ids)} pairs "
+              f"(range {start}-{end}{', limit=' + str(limit) if limit else ''})")
 
     def __len__(self):
         return len(self.ids)
