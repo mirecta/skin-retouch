@@ -22,6 +22,13 @@ PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PARENT not in sys.path:
     sys.path.insert(0, PARENT)
 
+# Silence stylegan3 custom_ops: CUDA build fails on this machine; ref impl is fine
+SG3_REPO = os.path.join(PARENT, 'styleretoucher', 'stylegan3_repo')
+if SG3_REPO not in sys.path:
+    sys.path.insert(0, SG3_REPO)
+from torch_utils import custom_ops
+custom_ops.verbosity = 'none'
+
 from styleretoucher import StyleRetoucher
 from data import FFHQRDataset
 
