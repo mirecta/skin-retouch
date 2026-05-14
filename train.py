@@ -89,7 +89,7 @@ def evaluate(G, val_dl, criterion, device, writer=None, epoch=None):
 
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 R_0, R_l, M, blends = G(inp)
-                _, loss_dict = criterion(R_0, R_l, M, blends, tgt,
+                _, loss_dict = criterion(R_0, R_l, M, blends, tgt, inp=None,
                                          D_fake_logits=None, mask_gt=mask_gt)
 
             R0_f = R_0.float().clamp(0, 1)
@@ -157,6 +157,8 @@ def main():
         lambda_adv=tcfg['lambda_adv'],
         lambda_dice=tcfg['lambda_dice'],
         lambda_tv=tcfg['lambda_tv'],
+        lambda_aesthetic=tcfg.get('lambda_aesthetic', 0.0),
+        aesthetic_metric=tcfg.get('aesthetic_metric', 'clipiqa'),
     ).to(device)
 
     # --- Optimizers ---
@@ -269,7 +271,7 @@ def main():
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 R_0, R_l, M, blends = G(inp)
                 D_fake_for_G = D(torch.cat([inp, R_0], dim=1))
-                loss_G, loss_dict = criterion(R_0, R_l, M, blends, tgt,
+                loss_G, loss_dict = criterion(R_0, R_l, M, blends, tgt, inp=inp,
                                               D_fake_logits=D_fake_for_G,
                                               mask_gt=mask_gt)
 
@@ -306,6 +308,7 @@ def main():
                 'loss_D': f"{loss_D.item():.4f}",
                 'mse':    f"{loss_dict['mse']:.4f}",
                 'perc':   f"{loss_dict['perc']:.4f}",
+                'aes':    f"{loss_dict['aesthetic']:.4f}",
                 'ema':    f"{ema_loss_G:.4f}" if ema_loss_G else "n/a",
                 'B0':     f"{B0_mean:.3f}",
                 'crop':   patch_size,
