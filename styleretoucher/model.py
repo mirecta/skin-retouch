@@ -174,6 +174,17 @@ class StyleRetoucher(nn.Module):
 
         self.se = SemanticExtractor()
 
+        # Initialise SE's w_head to start near StyleGAN2's average W+. We use
+        # small-magnitude weights + bias=w_avg so the first forward outputs
+        # roughly w_avg, and gradients can move it toward input-specific W+.
+        with torch.no_grad():
+            z = torch.randn(10000, G.z_dim)
+            ws = G.mapping(z, None, truncation_psi=1.0)
+            w_avg = ws.mean(dim=0).flatten()              # [18*512]
+            linear = self.se.w_head[-1]
+            linear.weight.data.mul_(0.01)                 # tiny but non-zero
+            linear.bias.data.copy_(w_avg)
+
         self.bafs = nn.ModuleDict({
             str(res): BAFS(SG2_CHANNELS[res])
             for res in self.BLEND_RESOLUTIONS
