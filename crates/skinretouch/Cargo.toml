@@ -1,0 +1,17 @@
+[package]
+name = "skinretouch"
+description = "Clean-room, Portraiture-style skin smoothing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["ai"]
+# Face detection (YuNet) and face parsing (BiSeNet) through ONNX Runtime.
+ai = ["dep:ort"]
+
+[dependencies]
+anyhow.workspace = true
+image.workspace = true
+rayon.workspace = true
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["std", "download-binaries", "copy-dylibs", "tls-native", "api-24"] }

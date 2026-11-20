@@ -1,4 +1,6 @@
 __pycache__/
 *.pyc
 models/*.onnx
-tests/*.png
+python/tests/*.png
+/target/
+/test-data/

@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/skinretouch", "crates/skinretouch-cli", "crates/skinretouch-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/mirecta/skin-retouch"
+
+[workspace.dependencies]
+skinretouch = { path = "crates/skinretouch", default-features = false }
+anyhow = "1"
+image = "0.25"
+rayon = "1.12"
+
+[profile.dev]
+# image processing is unusably slow without optimizations
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"

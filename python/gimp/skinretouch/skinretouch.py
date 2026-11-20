@@ -21,7 +21,7 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 PROC = "plug-in-skin-retouch"
-MODELS = os.path.join(_REPO, "models")
+MODELS = os.path.join(_REPO, "..", "models")
 YUNET = os.path.join(MODELS, "face_detection_yunet_2023mar.onnx")
 BISENET = os.path.join(MODELS, "bisenet_resnet18.onnx")
 
